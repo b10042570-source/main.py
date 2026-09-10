@@ -1,0 +1,6 @@
+pyTelegramBotAPI
+requests
+user-agent
+requests-toolbelt
+urllib3
+fake-useragent
