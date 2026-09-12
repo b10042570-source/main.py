@@ -1,6 +1,6 @@
-pyTelegramBotAPI
+python-telegram-bot
+selenium
 requests
-user-agent
 requests-toolbelt
-urllib3
+httpx
 fake-useragent
