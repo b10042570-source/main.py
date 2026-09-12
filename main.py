@@ -7,6 +7,9 @@ import asyncio
 import httpx
 import requests
 import json
+import hashlib
+import uuid
+import base64
 import threading
 import queue
 from urllib.parse import urlparse
@@ -55,6 +58,7 @@ ZIPS_CH = ["10001", "90001", "60601"]
 
 MAX_RETRIES_CH = 2
 RESULTS_FILE_CH = "results.txt"
+DEBUG_DIR_CH = "debug_output"
 RESTART_BROWSER_EVERY_CH = 5
 PARALLEL_WORKERS_CH = 4
 
@@ -110,6 +114,7 @@ class ChargeTester:
         self.waits = None
         self.debug = debug
         self.worker_id = worker_id
+        os.makedirs(DEBUG_DIR_CH, exist_ok=True)
 
     def log(self, msg):
         if self.debug:
@@ -132,6 +137,8 @@ class ChargeTester:
                     "profile.managed_default_content_settings.javascript": 1,
                     "profile.managed_default_content_settings.plugins": 2,
                     "profile.managed_default_content_settings.popups": 2,
+                    "profile.managed_default_content_settings.geolocation": 2,
+                    "profile.managed_default_content_settings.media_stream": 2,
                 }
                 options.add_experimental_option("prefs", prefs)
                 session_id = str(random.randint(1000000, 9999999))
@@ -459,7 +466,6 @@ def charge_worker_loop(worker_id, task_queue, results, approved, live, declined_
     tester._close()
     safe_log_ch(f"Worker finished ({cards_done} cards)", worker_id)
 
-
 async def charge_mass_run(file_path, chat_id, context, username):
     global hit_counter
     stop_users[chat_id] = False
@@ -554,7 +560,7 @@ async def charge_mass_run(file_path, chat_id, context, username):
         except:
             pass
 
-
+# ==================== Charge Single ====================
 async def ch_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global hit_counter
     user_id = update.effective_user.id
@@ -593,7 +599,6 @@ async def ch_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         username = user.username or user.first_name or "Unknown"
         await send_hit(context, update.effective_chat.id, hit_counter, username, "💵 Insufficient Funds", result, "Charge 1$")
 
-
 async def format_charge_response(card_full, result, message, taken, user_id, mode="Single"):
     bin_number = card_full.split("|")[0][:6]
     info, bank, country = await get_bin_info(bin_number)
@@ -631,13 +636,11 @@ async def format_charge_response(card_full, result, message, taken, user_id, mod
 - - - - - - - - - - - - - - - - - - - - - -
 🤖 checker v1""")
 
-
 try:
     with open('stripe_keys.json', 'r') as f:
         STRIPE_KEYS = json.load(f)
 except:
     STRIPE_KEYS = {}
-
 
 UA = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36'
 api_semaphore = asyncio.Semaphore(6)
@@ -658,8 +661,32 @@ PAYPAL_RESPONSES = [
     'TX_ATTEMPTS_EXCEED_LIMIT', 'PAYER_ACCOUNT_LOCKED_OR_CLOSED',
     'DECLINED', 'CHARGE', 'UNPROCESSABLE_ENTITY', 'VALIDATION_ERROR',
     'INVALID_REQUEST', 'AUTHENTICATION_FAILURE', 'NOT_AUTHORIZED',
+    'NOT_ENABLED_FOR_CARD_PROCESSING', 'CARD_TYPE_NOT_SUPPORTED',
+    'MERCHANT_NOT_ENABLED', 'PAYEE_NOT_ENABLED_FOR_CARD_PROCESSING',
+    'INVALID_CURRENCY', 'CURRENCY_NOT_SUPPORTED', 'AMOUNT_MISMATCH',
+    'ITEM_TOTAL_MISMATCH', 'TAX_TOTAL_MISMATCH', 'SHIPPING_TOTAL_MISMATCH',
+    'HANDLING_TOTAL_MISMATCH', 'INSURANCE_TOTAL_MISMATCH', 'SHIPPING_DISCOUNT_MISMATCH',
+    'INVALID_PAYER_ID', 'INVALID_PAYEE_ID', 'INVALID_RESOURCE_ID',
+    'INVALID_PARAMETER', 'INVALID_PARAMETER_SYNTAX', 'INVALID_STRING_LENGTH',
+    'INVALID_STRING_FORMAT', 'MISSING_REQUIRED_PARAMETER', 'DUPLICATE_REQUEST_ID',
+    'DUPLICATE_INVOICE_ID', 'MAX_NUMBER_OF_PAYMENT_ATTEMPTS_EXCEEDED',
+    'PAYEE_ACCOUNT_RESTRICTED', 'PAYEE_ACCOUNT_INVALID', 'PAYEE_ACCOUNT_LOCKED_OR_CLOSED',
+    'PAYEE_BLOCKED_TRANSACTION', 'PAYER_BLOCKED_TRANSACTION', 'PAYER_ACCOUNT_RESTRICTED',
+    'PAYER_ACCOUNT_INVALID', 'UNSUPPORTED_INTENT', 'UNSUPPORTED_PAYMENT_INSTRUMENT',
+    'UNSUPPORTED_SHIPPING_TYPE', 'SHIPPING_ADDRESS_INVALID', 'SHIPPING_OPTION_NOT_SUPPORTED',
+    'MULTIPLE_SHIPPING_ADDRESS_NOT_SUPPORTED', 'MULTIPLE_SHIPPING_OPTION_SELECTED',
+    'INVALID_PICKUP_ADDRESS', 'PICKUP_ADDRESS_INVALID', 'INVALID_SHIPPING_ADDRESS',
+    'AUTHORIZATION_VOIDED', 'AUTHORIZATION_EXPIRED', 'AUTHORIZATION_DENIED',
+    'AUTHORIZATION_CAPTURED', 'CAPTURE_FULLY_REFUNDED', 'CAPTURE_PARTIALLY_REFUNDED',
+    'REFUND_NOT_PERMITTED', 'REFUND_DENIED', 'REFUND_FAILED',
+    'TRANSACTION_ALREADY_REFUNDED', 'TRANSACTION_LIMIT_EXCEEDED',
+    'BILLING_AGREEMENT_NOT_FOUND', 'BILLING_AGREEMENT_CANCELLED',
+    'BILLING_AGREEMENT_EXPIRED', 'BILLING_AGREEMENT_FAILED',
+    'INTERNAL_SERVER_ERROR', 'SERVICE_UNAVAILABLE', 'RESOURCE_NOT_FOUND',
+    'METHOD_NOT_ALLOWED', 'NOT_ACCEPTABLE', 'UNSUPPORTED_MEDIA_TYPE',
+    'RATE_LIMIT_REACHED', 'INSUFFICIENT_PERMISSIONS', 'INVALID_ACCESS_TOKEN',
+    'EXPIRED_ACCESS_TOKEN', 'MALFORMED_REQUEST', 'UNKNOWN_ERROR',
 ]
-
 
 async def get_bin_info(bin_number):
     urls = [f"https://bins.antipublic.cc/bins/{bin_number}", f"https://lookup.binlist.net/{bin_number}"]
@@ -684,7 +711,6 @@ async def get_bin_info(bin_number):
             continue
         await asyncio.sleep(0.5)
     return "Unknown", "Unknown", "Unknown"
-
 
 class PayPalCommerce:
     def __init__(self, target_url=None):
@@ -1176,7 +1202,6 @@ class PayPalCommerce:
         except Exception as e:
             return f"Error: {e}"
 
-
 async def check_card_api(card_full, gateway_url):
     async with api_semaphore:
         try:
@@ -1201,7 +1226,6 @@ async def check_card_api(card_full, gateway_url):
                     return "declined", "Declined"
         except Exception as e:
             return "declined", f"Error: {e}"
-
 
 def check_stripe_sync(card, key_id="1"):
     try:
@@ -1267,7 +1291,6 @@ def check_stripe_sync(card, key_id="1"):
         except:
             pass
 
-
 def check_auth_sync(card):
     try:
         session = requests.Session()
@@ -1303,7 +1326,6 @@ def check_auth_sync(card):
         except:
             pass
 
-
 async def send_hit(context, chat_id, hit_counter, username, status_text, response, gateway_name):
     hit_text = f"""⚡ 𝗵𝗶𝘁 𝗗𝗲𝘁𝗲𝗰𝘁𝗲𝗱 #{hit_counter} 📌
 - - - - - - - - - - - - - - - - - - - - - -
@@ -1332,20 +1354,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.message.reply_text(premium_emoji(f"⚡ Welcome! @{username} ⚡\n- - - - - - - - - - - - - - - - - - - - - -\n🚀 Bot Status: Online"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-
 async def free_cmds_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]]
     await query.edit_message_text(premium_emoji("🤖 FREE COMMANDS:\n• /start - Start\n• /cmds - Commands\n• /pp [card] - PayPal single\n• /st [card] - Stripe single\n• /ch [card] - Charge 1$ single\n• /auth [card] - Auth $0 check\n• /clean - Clean cards file\n• /parts [num] - Split file\n• /stop - Stop mass\n• /code [key] - Activate VIP"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-
 async def vip_cmds_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]]
     await query.edit_message_text(premium_emoji("💎 VIP COMMANDS:\n• Upload combo file - Mass checking (Max 2000)\n• /st [card] - Stripe single\n• /ch [card] - Charge 1$ single\n• /auth [card] - Auth $0 check"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-
 
 async def admin_cmds_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1356,7 +1375,6 @@ async def admin_cmds_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]]
     await query.edit_message_text(premium_emoji("👑 ADMIN COMMANDS:\n• /add [url] - Add gateway\n• /rmadd [num] - Remove gateway\n• /show_gateways - Show gateways\n• /ban_user [id] - Ban user\n• /unban_user [id] - Unban user\n• /prm [id] [days] - Add VIP\n• /rmprm [id] - Remove VIP\n• /addkey [pk] [sk] - Add Stripe key\n• /rmkey [id] - Remove Stripe key\n• /wafa [days] [max] - Generate codes\n• /SENT [msg] - Broadcast"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-
 
 async def check_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1370,49 +1388,41 @@ async def check_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     ]
     await query.edit_message_text(premium_emoji("💳 Choose check type:"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-
 async def check_paypal_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(premium_emoji("💳 Send card:\n<code>/pp [card]</code>"), parse_mode="HTML")
-
 
 async def check_stripe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(premium_emoji("💳 Send card:\n<code>/st [card]</code>"), parse_mode="HTML")
 
-
 async def check_charge_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(premium_emoji("💳 Send card:\n<code>/ch [card]</code>"), parse_mode="HTML")
-
 
 async def check_auth_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(premium_emoji("🛡 Send card:\n<code>/auth [card]</code>"), parse_mode="HTML")
 
-
 async def clean_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(premium_emoji("🧹 Send cards file to clean:\nFormat: <code>number|mm|yy|cvv</code>"), parse_mode="HTML")
-
 
 async def parts_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(premium_emoji("📁 Send file then use:\n<code>/parts [number]</code>\n\nExample: <code>/parts 4</code>"), parse_mode="HTML")
 
-
 async def stats_panel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]]
     await query.edit_message_text(premium_emoji(f"📊 STATS:\n👥 Users: {len(ALL_USERS)}\n🌐 Gateways: {len(GATEWAYS)}\n🔑 Stripe Keys: {len(STRIPE_KEYS)}"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-
 
 async def back_to_start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1428,7 +1438,6 @@ async def back_to_start_callback(update: Update, context: ContextTypes.DEFAULT_T
     ]
     await query.edit_message_text(premium_emoji(f"⚡ Welcome! @{username} ⚡\n- - - - - - - - - - - - - - - - - - - - - -\n🚀 Bot Status: Online"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-
 async def show_gateways(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS:
         return
@@ -1440,7 +1449,6 @@ async def show_gateways(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton(f"🌐 Gate #{i}", callback_data=f"gate_info_{i}")])
     keyboard.append([InlineKeyboardButton("🔙 Close", callback_data="close_gateways")])
     await update.message.reply_text(premium_emoji(f"🌐 <b>Gateways ({len(GATEWAYS)}):</b>\n\nChoose a gateway to manage:"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-
 
 async def gate_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1457,7 +1465,6 @@ async def gate_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ]
         await query.edit_message_text(premium_emoji(f"🌐 <b>Gateway #{gate_num}:</b>\n<code>{gateway_url}</code>\n\nChoose action:"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-
 async def gate_remove_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1473,7 +1480,6 @@ async def gate_remove_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard.append([InlineKeyboardButton("🔙 Close", callback_data="close_gateways")])
         await query.edit_message_text(premium_emoji(f"🗑 <b>Gateway #{gate_num} removed!</b>\n\n🌐 <b>Remaining ({len(GATEWAYS)}):</b>"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-
 async def back_to_gateways_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1486,12 +1492,10 @@ async def back_to_gateways_callback(update: Update, context: ContextTypes.DEFAUL
     keyboard.append([InlineKeyboardButton("🔙 Close", callback_data="close_gateways")])
     await query.edit_message_text(premium_emoji(f"🌐 <b>Gateways ({len(GATEWAYS)}):</b>\n\nChoose a gateway to manage:"), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
-
 async def close_gateways_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.delete_message()
-
 
 async def cmds(update: Update, context: ContextTypes.DEFAULT_TYPE):
     commands_text = """👑 ADMIN:
@@ -1528,7 +1532,6 @@ async def cmds(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • /code [key] - Activate VIP"""
     await update.message.reply_text(premium_emoji(commands_text), parse_mode="HTML")
 
-
 async def pp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global hit_counter, gateway_index
     user_id = update.effective_user.id
@@ -1562,7 +1565,6 @@ async def pp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             status_text = "💵 Insufficient Funds"
         await send_hit(context, update.effective_chat.id, hit_counter, username, status_text, response, gateway_name)
-
 
 async def format_response(card_full, status, response, taken, gateway_url, gateway_num, user_id, mode="Single"):
     bin_number = card_full.split("|")[0][:6]
@@ -1598,7 +1600,6 @@ async def format_response(card_full, status, response, taken, gateway_url, gatew
 👤 𝐑𝐞𝐪 𝐁𝐲: <code>{user_id}</code> ({user_status}){gateway_info}
 - - - - - - - - - - - - - - - - - - - - - -
 🤖 checker v1""")
-
 
 async def format_stripe_response(card_full, result, taken, user_id, mode="Single"):
     bin_number = card_full.split("|")[0][:6]
@@ -1636,7 +1637,6 @@ async def format_stripe_response(card_full, result, taken, user_id, mode="Single
 - - - - - - - - - - - - - - - - - - - - - -
 🤖 checker v1""")
 
-
 async def format_auth_response(card_full, result_dict, taken, user_id, mode="Single"):
     bin_number = card_full.split("|")[0][:6]
     info, bank, country = await get_bin_info(bin_number)
@@ -1671,7 +1671,6 @@ async def format_auth_response(card_full, result_dict, taken, user_id, mode="Sin
 - - - - - - - - - - - - - - - - - - - - - -
 🤖 checker v1""")
 
-
 async def auth_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global hit_counter
     user_id = update.effective_user.id
@@ -1699,7 +1698,6 @@ async def auth_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = update.effective_user
         username = user.username or user.first_name or "Unknown"
         await send_hit(context, update.effective_chat.id, hit_counter, username, "🔥 Approved", result_dict.get('message', ''), "Auth $0")
-
 
 async def st_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global hit_counter
@@ -1737,13 +1735,11 @@ async def st_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         username = user.username or user.first_name or "Unknown"
         await send_hit(context, update.effective_chat.id, hit_counter, username, "💵 Insufficient Funds", result, "Stripe")
 
-
 def can_user_check(user_id, mode="file"):
     if user_id in ADMINS: return True
     if BANNED_USERS.get(user_id): return False
     if user_id in VIP_USERS and VIP_USERS[user_id] > time.time(): return True
     return mode == "single"
-
 
 async def handle_file_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1782,7 +1778,6 @@ async def handle_file_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(premium_emoji(f"❌ Error: {e}"), parse_mode="HTML")
 
-
 async def gateway_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1814,7 +1809,6 @@ async def gateway_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_tasks[user_id] = task
     del pending_files[user_id]
 
-
 async def process_paypal_file(file_path, chat_id, context, gateway_name="PayPal", username="Unknown"):
     global gateway_index, hit_counter
     user_id = chat_id
@@ -1822,6 +1816,7 @@ async def process_paypal_file(file_path, chat_id, context, gateway_name="PayPal"
     try:
         approved = live = declined = 0
         card_counter = 0
+        total_cards = 0
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             all_cards = f.readlines()
         valid_cards = []
@@ -1890,7 +1885,6 @@ async def process_paypal_file(file_path, chat_id, context, gateway_name="PayPal"
         await context.bot.send_message(chat_id, premium_emoji("🛑 Stopped."), parse_mode="HTML")
     except Exception as e:
         await context.bot.send_message(chat_id, premium_emoji(f"❌ Error: {e}"), parse_mode="HTML")
-
 
 async def process_stripe_file(file_path, chat_id, context, gateway_name="Stripe", username="Unknown"):
     global hit_counter
@@ -1969,7 +1963,6 @@ async def process_stripe_file(file_path, chat_id, context, gateway_name="Stripe"
     except Exception as e:
         await context.bot.send_message(chat_id, premium_emoji(f"❌ Error: {e}"), parse_mode="HTML")
 
-
 async def process_auth_file(file_path, chat_id, context, gateway_name="Auth $0", username="Unknown"):
     global hit_counter
     user_id = chat_id
@@ -2038,7 +2031,6 @@ async def process_auth_file(file_path, chat_id, context, gateway_name="Auth $0",
     except Exception as e:
         await context.bot.send_message(chat_id, premium_emoji(f"❌ Error: {e}"), parse_mode="HTML")
 
-
 async def stop_mass_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer("🛑 Stopping...")
@@ -2046,12 +2038,10 @@ async def stop_mass_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     stop_users[user_id] = True
     await query.edit_message_text(premium_emoji("🛑 Stopping..."), parse_mode="HTML")
 
-
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     stop_users[user_id] = True
     await update.message.reply_text(premium_emoji("🛑 Stopping..."), parse_mode="HTML")
-
 
 async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2069,6 +2059,7 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_lines = len(lines)
         valid_cards = []
         removed = 0
+        current_year = datetime.now().year % 100
         current_month = datetime.now().month
         for line in lines:
             line = line.strip()
@@ -2127,7 +2118,6 @@ async def clean_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     except Exception as e:
         await msg.edit_text(premium_emoji(f"❌ Error: {e}"), parse_mode="HTML")
-
 
 async def parts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2207,7 +2197,6 @@ async def parts_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await msg.edit_text(premium_emoji(f"❌ Error: {e}"), parse_mode="HTML")
 
-
 async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     ALL_USERS.add(user_id)
@@ -2220,7 +2209,6 @@ async def code_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     code_data["used"] += 1
     await update.message.reply_text(premium_emoji(f"🚀 VIP activated for {code_data['duration']} days."), parse_mode="HTML")
 
-
 async def wafa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS: return
     try:
@@ -2230,7 +2218,6 @@ async def wafa_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(premium_emoji(f"💰 Code: <code>{code}</code>"), parse_mode="HTML")
     except: pass
 
-
 async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS: return
     msg = "📊 Users:\n\n"
@@ -2239,18 +2226,15 @@ async def show_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"• <code>{uid}</code> - <b>{status}</b>\n"
     await update.message.reply_text(premium_emoji(msg), parse_mode="HTML")
 
-
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS: return
     BANNED_USERS[int(context.args[0])] = True
     await update.message.reply_text(premium_emoji("✅ Banned."), parse_mode="HTML")
 
-
 async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS: return
     BANNED_USERS.pop(int(context.args[0]), None)
     await update.message.reply_text(premium_emoji("✅ Unbanned."), parse_mode="HTML")
-
 
 async def add_gateway(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS: return
@@ -2258,7 +2242,6 @@ async def add_gateway(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if url not in GATEWAYS:
         GATEWAYS.append(url)
         await update.message.reply_text(premium_emoji(f"✅ Gateway #{len(GATEWAYS)} added."), parse_mode="HTML")
-
 
 async def remove_gateway(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS: return
@@ -2279,18 +2262,15 @@ async def remove_gateway(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(premium_emoji(f"❌ Error: {e}"), parse_mode="HTML")
 
-
 async def add_prm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS: return
     VIP_USERS[int(context.args[0])] = int(time.time()) + (int(context.args[1]) * 86400)
     await update.message.reply_text(premium_emoji("✅ VIP added."), parse_mode="HTML")
 
-
 async def remove_prm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS: return
     VIP_USERS.pop(int(context.args[0]), None)
     await update.message.reply_text(premium_emoji("✅ VIP removed."), parse_mode="HTML")
-
 
 async def add_stripe_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS: return
@@ -2306,7 +2286,6 @@ async def add_stripe_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open('stripe_keys.json', 'w') as f:
         json.dump(STRIPE_KEYS, f)
     await update.message.reply_text(premium_emoji(f"✅ Stripe Key Saved!\n🆔 Key ID: <code>{key_id}</code>"), parse_mode="HTML")
-
 
 async def remove_stripe_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS: return
@@ -2325,7 +2304,6 @@ async def remove_stripe_key(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(premium_emoji(f"❌ Key {key_id} not found!"), parse_mode="HTML")
 
-
 async def try_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS: return
     try:
@@ -2333,7 +2311,6 @@ async def try_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_text = " ".join(context.args[1:])
         await context.bot.send_message(chat_id=user_id, text=premium_emoji(reply_text), parse_mode="HTML")
     except: pass
-
 
 async def sent_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMINS: return
@@ -2344,10 +2321,8 @@ async def sent_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(0.05)
         except: continue
 
-
 async def error_handler(update, context):
     pass
-
 
 def main():
     app = Application.builder().token(TOKEN).build()
@@ -2395,7 +2370,6 @@ def main():
     app.add_handler(CallbackQueryHandler(gateway_callback, pattern="^gateway_"))
     app.add_handler(CallbackQueryHandler(stop_mass_callback, pattern="^stop_mass_"))
     app.run_polling()
-
 
 if __name__ == "__main__":
     main()
