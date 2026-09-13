@@ -25,7 +25,7 @@ from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.common.exceptions import StaleElementReferenceException
 
 # ==================== Settings ====================
-TOKEN = '7707742168:AAFv6SFEztGlej6seuKm6v9HZScmNjP3PEA'
+TOKEN = '8840828420:AAEzYToODDQIt-gSl89FmaDNhytOH9t4W6M'
 ADMINS = [6843321125]
 VIP_USERS = {}
 BANNED_USERS = {}
